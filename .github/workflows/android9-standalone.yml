@@ -1,7 +1,7 @@
 name: DiPlay Android 9 test APK
 
-# Applies android9-hotspot-channel.patch (SoftAP interface selection + measured iAP2 channel) on
-# tag v0.2.11, then builds :mobile:assembleStandaloneDebug. Debug-signed and suffixed with
+# Applies android9-hotspot-channel.patch (SoftAP interface selection + measured iAP2 channel) to
+# this branch, then builds :mobile:assembleStandaloneDebug. Debug-signed and suffixed with
 # ".hudtest", so it installs beside an official package. The accessory identity is read out of the
 # official release APK after its SHA256 is verified, so the build needs no repository secrets.
 
@@ -17,9 +17,6 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          fetch-tags: true
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -28,17 +25,12 @@ jobs:
         with:
           packages: platform-tools platforms;android-37.0 build-tools;36.0.0 ndk;28.2.13676358
       - uses: gradle/actions/setup-gradle@v4
-      - name: Check out v0.2.11
-        run: |
-          set -euo pipefail
-          cp android9-hotspot-channel.patch "$RUNNER_TEMP/"
-          git checkout v0.2.11
       - name: Apply the hotspot fixes
         run: |
           set -euo pipefail
-          P="$RUNNER_TEMP/android9-hotspot-channel.patch"
-          git apply --check "$P"
-          git apply "$P"
+          git log -1 --oneline
+          git apply --check android9-hotspot-channel.patch
+          git apply android9-hotspot-channel.patch
           M=shared/src/main/java/com/shilapi/xcertplay/network/ManualHotspotManager.kt
           grep -q 'resolvedChannel = channel.takeIf' "$M"
           grep -q 'startsWith("swlan") -> 90' "$M"
