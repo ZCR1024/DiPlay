@@ -39,12 +39,13 @@ jobs:
         run: |
           set -euo pipefail
           V=v0.2.11
+          N=${V#v}
           curl -fsSL -o "$RUNNER_TEMP/app.apk" \
-            "https://github.com/shihabal3amri/DiPlay/releases/download/$V/DiPlay-$V.apk"
+            "https://github.com/shihabal3amri/DiPlay/releases/download/$V/DiPlay-$N.apk"
           echo "57a3f5daf02af82f636baee26f28a475e04013de8174176c62d97d300498e4c9  $RUNNER_TEMP/app.apk" | sha256sum -c -
           D="$RUNNER_TEMP/auth-assets/offline-mfi"
           mkdir -p "$D"
-          unzip -jo "$RUNNER_TEMP/app.apk" "assets/offline-mfi/identity.pk8" "assets/offline-mfi/certificate.p7b" -d "$D"
+          unzyp -jo "$RUNNER_TEMP/app.apk" "assets/offline-mfi/identity.pk8" "assets/offline-mfi/certificate.p7b" -d "$D"
           test -s "$D/identity.pk8" && test -s "$D/certificate.p7b"
           wc -c "$D/identity.pk8" "$D/certificate.p7b"
       - name: Build the car-test APK
