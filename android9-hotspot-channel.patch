@@ -1,6 +1,17 @@
 --- a/shared/src/main/java/com/shilapi/xcertplay/network/ManualHotspotManager.kt
 +++ b/shared/src/main/java/com/shilapi/xcertplay/network/ManualHotspotManager.kt
-@@ -104,18 +104,38 @@
+@@ -74,6 +74,10 @@
+         }
+         require(timeoutMillis > 0) { "timeoutMillis must be positive" }
+ 
++        // Name the interfaces this firmware exposes as soon as the lookup begins, so a report
++        // exported while it is still running already says which one is the access point.
++        onDiagnostic("Manual hotspot interface scan start: ${describeInterfaces()}")
++
+         val deadlineNanos = deadlineAfter(timeoutMillis)
+         val apConfiguration = readApConfiguration()
+         if (apConfiguration != null && apConfiguration.ssid != expectedSsid) {
+@@ -104,18 +108,45 @@
                      else -> null
                  }
                  val security = apConfiguration?.security ?: expectedSecurity
@@ -22,10 +33,17 @@
 +                val resolvedChannel = channel.takeIf { it > 0 }
 +                    ?: resolvedFrequencyMHz?.let(::wifiFrequencyMhzToChannel)
 +                    ?: 0
++                // A MAC address belonging to something other than a Wi-Fi SoftAP must not be sent
++                // as the hotspot's BSSID: the iPhone matches that field against the network it
++                // joins, and iAP2 0x5703 documents it as optional.
++                val reportedBssid = localInterface.hardwareAddress?.takeIf {
++                    AP_INTERFACE_NAME.matches(localInterface.name)
++                }
                  onDiagnostic("Manual hotspot configReadable=${apConfiguration != null} " +
 -                    "security=$security channelKnown=${channel > 0} " +
 +                    "security=$security channelKnown=${resolvedChannel > 0} " +
                      "hardwareAddressKnown=${localInterface.hardwareAddress != null} iface=${localInterface.name} " +
++                    "bssidReported=${reportedBssid != null} " +
 +                    "driverFrequency=${driverReading?.frequencyMHz ?: "none"} " +
 +                    "driverError=${driverReading?.error ?: "notQueried"} " +
                      "family=${if (localInterface.hostAddress is Inet6Address) "IPv6" else "IPv4"}")
@@ -42,18 +60,19 @@
                              "reporting iAP2 channel 0 (auto) instead of configured channel " +
                              "$expectedChannel",
                      )
-@@ -125,8 +145,8 @@
+@@ -125,16 +156,16 @@
                      ssid = expectedSsid,
                      passphrase = passphrase,
                      security = security,
 -                    channel = channel,
 -                    frequencyMHz = frequencyMHz,
+-                    bssid = localInterface.hardwareAddress,
 +                    channel = resolvedChannel,
 +                    frequencyMHz = resolvedFrequencyMHz,
-                     bssid = localInterface.hardwareAddress,
++                    bssid = reportedBssid,
                      interfaceName = localInterface.name,
                      hostAddress = localInterface.hostAddress,
-@@ -134,7 +154,7 @@
+                     bandLabel = when (expectedBand) {
                          ManualHotspotBand.GHZ_2_4 -> "2.4 GHz"
                          ManualHotspotBand.GHZ_5 -> "5 GHz"
                          ManualHotspotBand.AUTO ->
@@ -62,7 +81,7 @@
                      },
                      backend = WirelessHotspotBackend.MANUAL_HOTSPOT,
                  )
-@@ -144,7 +164,7 @@
+@@ -144,7 +175,7 @@
              if (remainingNanos <= 0) {
                  throw IOException(
                      "Timed out after ${timeoutMillis}ms waiting for the manual hotspot: " +
@@ -71,7 +90,7 @@
                  )
              }
              sleep(minOf(remainingNanos, INTERFACE_POLL_NANOS))
-@@ -224,11 +244,22 @@
+@@ -224,6 +255,16 @@
              .maxByOrNull(LocalHotspotInterface::score)
      }
  
@@ -88,13 +107,7 @@
      private fun isUsableInterface(
          networkInterface: NetworkInterface,
          primaryInterface: String?,
-     ): Boolean = try {
-         networkInterface.name != primaryInterface &&
-+            !networkInterface.name.contains('.') &&
-             !networkInterface.isLoopback &&
-             networkInterface.isUp &&
-             EXCLUDED_INTERFACE_PREFIXES.none { networkInterface.name.startsWith(it) }
-@@ -239,6 +270,9 @@
+@@ -239,6 +280,9 @@
      private fun interfaceScore(name: String, address: InetAddress): Int {
          var score = when {
              name.startsWith("ap") || name.contains("softap", ignoreCase = true) -> 100
@@ -104,18 +117,36 @@
              name.startsWith("p2p") -> 80
              name.startsWith("wlan") -> 70
              else -> 0
-@@ -444,6 +478,14 @@
-             "sit",
+@@ -445,6 +489,11 @@
              "ip6",
              "bond",
-+            // An Ethernet backbone interface or its VLAN tags are never the Wi-Fi hotspot, and on
-+            // a car they carry the internal vehicle network, so binding the AirPlay listener there
-+            // leaves the iPhone unable to reach it.
-+            "eth",
-+            "br0",
-+            "rndis",
-+            "ncm",
-+            "usb",
          )
++
++        // Names a Wi-Fi SoftAP interface plausibly carries. Ethernet backbone interfaces can win the
++        // score race on a car when no wireless interface reports an address, and their MAC address is
++        // then not the hotspot's BSSID.
++        val AP_INTERFACE_NAME = Regex("(?:ap|wlan|swlan|softap)[0-9]+")
      }
  }
+ 
+--- a/mobile/build.gradle.kts
++++ b/mobile/build.gradle.kts
+@@ -17,8 +17,8 @@
+         applicationId = "com.shihab.diplay"
+         minSdk = 28
+         targetSdk = 37
+-        versionCode = 30
+-        versionName = "0.2.11"
++        versionCode = 29
++        versionName = "0.2.10"
+ 
+     }
+ 
+@@ -39,7 +39,6 @@
+ 
+     buildTypes {
+         debug {
+-            applicationIdSuffix = ".hudtest"
+             versionNameSuffix = "-hud-test"
+         }
+         release {
