@@ -1,0 +1,121 @@
+--- a/shared/src/main/java/com/shilapi/xcertplay/network/ManualHotspotManager.kt
++++ b/shared/src/main/java/com/shilapi/xcertplay/network/ManualHotspotManager.kt
+@@ -104,18 +104,38 @@
+                     else -> null
+                 }
+                 val security = apConfiguration?.security ?: expectedSecurity
++                // Public Android APIs cannot report a running SoftAP's channel below API 30, and
++                // the station-side reads describe the client interface rather than the AP. Ask the
++                // driver through Wireless Extensions instead - the same read-only fallback the
++                // local-hotspot backend uses - so the iPhone is told where to look for the AP.
++                val driverBandHint = when (expectedBand) {
++                    ManualHotspotBand.GHZ_2_4 -> "2.4 GHz"
++                    ManualHotspotBand.GHZ_5 -> "5 GHz"
++                    ManualHotspotBand.AUTO -> null
++                }
++                val driverReading = if (channel > 0 && frequencyMHz != null) {
++                    null
++                } else {
++                    LegacyHotspotRadio.read(localInterface.name, driverBandHint)
++                }
++                val resolvedFrequencyMHz = frequencyMHz ?: driverReading?.frequencyMHz
++                val resolvedChannel = channel.takeIf { it > 0 }
++                    ?: resolvedFrequencyMHz?.let(::wifiFrequencyMhzToChannel)
++                    ?: 0
+                 onDiagnostic("Manual hotspot configReadable=${apConfiguration != null} " +
+-                    "security=$security channelKnown=${channel > 0} " +
++                    "security=$security channelKnown=${resolvedChannel > 0} " +
+                     "hardwareAddressKnown=${localInterface.hardwareAddress != null} iface=${localInterface.name} " +
++                    "driverFrequency=${driverReading?.frequencyMHz ?: "none"} " +
++                    "driverError=${driverReading?.error ?: "notQueried"} " +
+                     "family=${if (localInterface.hostAddress is Inet6Address) "IPv6" else "IPv4"}")
+                 if (security != Iap2WirelessSecurity.NONE && passphrase.isEmpty()) {
+                     throw IOException("Manual hotspot is secured but no passphrase was provided")
+                 }
+ 
+-                if (channel == 0) {
++                if (resolvedChannel == 0) {
+                     Log.w(
+                         TAG,
+-                        "Could not read the active hotspot channel from Android public APIs; " +
++                        "Could not read the active hotspot channel from Android APIs or the driver; " +
+                             "reporting iAP2 channel 0 (auto) instead of configured channel " +
+                             "$expectedChannel",
+                     )
+@@ -125,8 +145,8 @@
+                     ssid = expectedSsid,
+                     passphrase = passphrase,
+                     security = security,
+-                    channel = channel,
+-                    frequencyMHz = frequencyMHz,
++                    channel = resolvedChannel,
++                    frequencyMHz = resolvedFrequencyMHz,
+                     bssid = localInterface.hardwareAddress,
+                     interfaceName = localInterface.name,
+                     hostAddress = localInterface.hostAddress,
+@@ -134,7 +154,7 @@
+                         ManualHotspotBand.GHZ_2_4 -> "2.4 GHz"
+                         ManualHotspotBand.GHZ_5 -> "5 GHz"
+                         ManualHotspotBand.AUTO ->
+-                            frequencyMHz?.let(::bandLabel) ?: observedBandLabel ?: "Auto"
++                            resolvedFrequencyMHz?.let(::bandLabel) ?: observedBandLabel ?: "Auto"
+                     },
+                     backend = WirelessHotspotBackend.MANUAL_HOTSPOT,
+                 )
+@@ -144,7 +164,7 @@
+             if (remainingNanos <= 0) {
+                 throw IOException(
+                     "Timed out after ${timeoutMillis}ms waiting for the manual hotspot: " +
+-                        lastReason,
++                        "$lastReason; interfaces up: ${describeInterfaces()}",
+                 )
+             }
+             sleep(minOf(remainingNanos, INTERFACE_POLL_NANOS))
+@@ -224,11 +244,22 @@
+             .maxByOrNull(LocalHotspotInterface::score)
+     }
+ 
++    /** Interface names only: a failed lookup should still say what this firmware actually exposes. */
++    private fun describeInterfaces(): String = try {
++        Collections.list(NetworkInterface.getNetworkInterfaces())
++            .filter { it.isUp }
++            .joinToString(separator = " ") { it.name }
++            .ifBlank { "none" }
++    } catch (error: SocketException) {
++        "listing failed (${error.javaClass.simpleName})"
++    }
++
+     private fun isUsableInterface(
+         networkInterface: NetworkInterface,
+         primaryInterface: String?,
+     ): Boolean = try {
+         networkInterface.name != primaryInterface &&
++            !networkInterface.name.contains('.') &&
+             !networkInterface.isLoopback &&
+             networkInterface.isUp &&
+             EXCLUDED_INTERFACE_PREFIXES.none { networkInterface.name.startsWith(it) }
+@@ -239,6 +270,9 @@
+     private fun interfaceScore(name: String, address: InetAddress): Int {
+         var score = when {
+             name.startsWith("ap") || name.contains("softap", ignoreCase = true) -> 100
++            // Qualcomm head units, including BYD DiLink, run the SoftAP on swlan<n> rather than
++            // wlan<n>; without this the car's internal Ethernet VLAN outranks the real hotspot.
++            name.startsWith("swlan") -> 90
+             name.startsWith("p2p") -> 80
+             name.startsWith("wlan") -> 70
+             else -> 0
+@@ -444,6 +478,14 @@
+             "sit",
+             "ip6",
+             "bond",
++            // An Ethernet backbone interface or its VLAN tags are never the Wi-Fi hotspot, and on
++            // a car they carry the internal vehicle network, so binding the AirPlay listener there
++            // leaves the iPhone unable to reach it.
++            "eth",
++            "br0",
++            "rndis",
++            "ncm",
++            "usb",
+         )
+     }
+ }
