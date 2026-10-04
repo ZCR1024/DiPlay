@@ -1,0 +1,71 @@
+name: DiPlay Android 9 test APK
+
+# Applies android9-hotspot-channel.patch (SoftAP interface selection + measured iAP2 channel) on
+# tag v0.2.11, then builds :mobile:assembleStandaloneDebug. Debug-signed and suffixed with
+# ".hudtest", so it installs beside an official package. Needs secrets for the accessory identity.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools platforms;android-37.0 build-tools;36.0.0 ndk;28.2.13676358
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Check out v0.2.11
+        run: |
+          set -euo pipefail
+          cp android9-hotspot-channel.patch "$RUNNER_TEMP/"
+          git checkout v0.2.11
+      - name: Apply the hotspot fixes
+        run: |
+          set -euo pipefail
+          P="$RUNNER_TEMP/android9-hotspot-channel.patch"
+          git apply --check "$P"
+          git apply "$P"
+          M=shared/src/main/java/com/shilapi/xcertplay/network/ManualHotspotManager.kt
+          grep -q 'resolvedChannel = channel.takeIf' "$M"
+          grep -q 'startsWith("swlan") -> 90' "$M"
+          grep -q 'interfaces up:' "$M"
+      - name: Provision the accessory identity
+        env:
+          A: ${{ secrets.MFI_IDENTITY_PK8_BASE64 }}
+          B: ${{ secrets.MFI_CERTIFICATE_P7B_BASE64 }}
+        run: |
+          set -euo pipefail
+          test -n "$A" && test -n "$B" || { echo "::error::set both MFI secrets"; exit 1; }
+          D="$RUNNER_TEMP/auth-assets/offline-mfi"
+          mkdir -p "$D"
+          printf '%s' "$A" | base64 -d > "$D/identity.pk8"
+          printf '%s' "$B" | base64 -d > "$D/certificate.p7b"
+          wc -c "$D/identity.pk8" "$D/certificate.p7b"
+      - name: Build the car-test APK
+        env:
+          DIPLAY_AUTH_ASSETS_DIR: ${{ runner.temp }}/auth-assets
+        run: ./gradlew :mobile:assembleStandaloneDebug --no-daemon
+      - name: Check the identity reached the APK
+        run: |
+          set -euo pipefail
+          APK=$(find mobile/build/outputs/apk -name '*.apk' -print -quit)
+          unzip -l "$APK" | grep 'assets/offline-mfi/'
+          cp "$APK" "$RUNNER_TEMP/DiPlay-android9-test.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DiPlay-android9-test
+          path: ${{ runner.temp }}/DiPlay-android9-test.apk
+          retention-days: 30
